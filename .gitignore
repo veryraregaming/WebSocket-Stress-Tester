@@ -20,5 +20,5 @@ ENV/
 # Logs
 *.log
 
-# Local configuration - commented out for first commit
-# config.yaml
+# Local configuration - exclude personal config file
+config.yaml
