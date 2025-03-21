@@ -10,8 +10,8 @@ server:
 # Connection test settings
 test:
   start_connections: 10  # Start with 10 connections
-  max_connections: 100   # Test up to 100 connections
-  increment: 5           # Add 5 new connections each batch
+  max_connections: 20    # Test up to 20 connections
+  increment: 1           # Add 1 new connection each batch for precision
   batch_duration: 10     # Hold connections open longer to observe behavior
   connection_delay: 0.2  # Small delay between opening connections
   stability_threshold: 90.0  # percentage success rate considered stable
