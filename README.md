@@ -19,15 +19,19 @@ cd WebSocket-Stress-Tester
 
 # Install requirements
 pip install -r requirements.txt
+
+# Create your config file (copy from example)
+cp example_config.yaml config.yaml
+# Edit config.yaml with your server details
 ```
 
 ## Configuration
 
-Edit the `config.yaml` file to set your WebSocket server details and testing parameters:
+Copy `example_config.yaml` to `config.yaml` and edit it to set your WebSocket server details and testing parameters:
 
 ```yaml
 server:
-  host: "example.com"
+  host: "your-server.com"
   port: 8080
   protocol: "ws"  # ws or wss
   path: "/"
