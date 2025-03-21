@@ -339,6 +339,10 @@ async def main():
             # Wait for batch duration to test these new connections
             await asyncio.sleep(batch_duration)
             
+            # Signal the connections in this batch to end
+            print(f"\n[⏱️] Batch {batch_number} duration complete, closing this batch's connections...")
+            end_event.set()
+            
             # Gather results for just this batch's new connections
             batch_results_only = await asyncio.gather(*tasks, return_exceptions=True)
             
