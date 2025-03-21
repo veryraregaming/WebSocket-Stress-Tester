@@ -9,6 +9,7 @@ import platform
 import os
 import psutil
 import yaml
+import datetime
 
 # Default configuration (fallback if config.yaml not found)
 DEFAULT_CONFIG = {
@@ -25,9 +26,36 @@ DEFAULT_CONFIG = {
         "batch_duration": 5,
         "connection_delay": 0,
         "stability_threshold": 90.0,
-        "cumulative_mode": False  # Whether to keep previous connections active when adding new ones
+        "cumulative_mode": False,  # Whether to keep previous connections active when adding new ones
+        "verbose_mode": False      # Whether to show detailed connection logs
+    },
+    "display": {
+        "show_network_stats": True,  # Whether to show network stats after each batch
+        "show_system_info": True     # Whether to show system info at startup
     }
 }
+
+# Global verbosity level
+VERBOSE = False
+
+# Helper function to print with timestamp
+def log(message, level="INFO", end="\n"):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}", end=end)
+
+# Helper function for progress updates (overwrites the same line)
+def update_progress(message, final=False):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\r[{timestamp}] {message}", end="\n" if final else "")
+
+# Helper function to show a progress bar
+def show_progress_bar(current, total, prefix="", suffix="", length=30):
+    filled_length = int(length * current // total)
+    bar = "█" * filled_length + "░" * (length - filled_length)
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\r[{timestamp}] {prefix} |{bar}| {current}/{total} {suffix}", end="")
+    if current == total:  # When progress is complete, add a newline
+        print()
 
 # Load configuration from YAML
 def load_config():
@@ -35,10 +63,10 @@ def load_config():
     try:
         with open(config_path, 'r') as config_file:
             config = yaml.safe_load(config_file)
-            print(f"[ℹ️] Loaded configuration from {config_path}")
+            log(f"ℹ️ Loaded configuration from {config_path}")
             return config
     except Exception as e:
-        print(f"[⚠️] Warning: Could not load config.yaml ({str(e)}), using default configuration")
+        log(f"⚠️ Warning: Could not load config.yaml ({str(e)}), using default configuration")
         return DEFAULT_CONFIG
 
 # Global configuration
@@ -75,12 +103,15 @@ def get_system_info():
 
 def print_network_stats():
     """Print current network statistics"""
+    if not CONFIG.get('display', {}).get('show_network_stats', True):
+        return
+        
     try:
         net_stats = psutil.net_io_counters()
-        print(f"Network Stats: Sent: {net_stats.bytes_sent/1024/1024:.2f} MB | Received: {net_stats.bytes_recv/1024/1024:.2f} MB")
-        print(f"Packets: Sent: {net_stats.packets_sent} | Received: {net_stats.packets_recv} | Errors: {net_stats.errin + net_stats.errout}")
+        log(f"Network Stats: Sent: {net_stats.bytes_sent/1024/1024:.2f} MB | Received: {net_stats.bytes_recv/1024/1024:.2f} MB")
+        log(f"Packets: Sent: {net_stats.packets_sent} | Received: {net_stats.packets_recv} | Errors: {net_stats.errin + net_stats.errout}")
     except:
-        print("Could not retrieve network statistics")
+        log("Could not retrieve network statistics")
 
 async def test_connection(i, url, connection_batch, end_event):
     """Test a single WebSocket connection and keep it open until the end event is set"""
@@ -93,26 +124,34 @@ async def test_connection(i, url, connection_batch, end_event):
         async with websockets.connect(url) as websocket:
             connected_time = time.time()
             connect_time = round((connected_time - start_time) * 1000, 2)  # in ms
-            print(f"[✅] Batch {connection_batch} - Connection {connection_id} successfully connected ({connect_time}ms)")
+            if VERBOSE:
+                log(f"✅ Batch {connection_batch} - Connection {connection_id} successfully connected ({connect_time}ms)")
+            else:
+                update_progress(f"✅ Batch {connection_batch} - Connected {connection_id}/{i+1} connections", 
+                               final=(connection_id == i+1))
             
             # INITIAL MESSAGE PHASE
             test_message = f"Test message from connection {connection_id}"
             message_start = time.time()
             await websocket.send(test_message)
-            print(f"[📤] Batch {connection_batch} - Connection {connection_id} sent initial message")
+            if VERBOSE:
+                log(f"📤 Batch {connection_batch} - Connection {connection_id} sent initial message")
             
             # Wait for response with timeout
             response = await asyncio.wait_for(websocket.recv(), timeout=3.0)
             message_time = round((time.time() - message_start) * 1000, 2)  # in ms
             response_times.append(message_time)
-            print(f"[📥] Batch {connection_batch} - Connection {connection_id} received response: {message_time}ms")
+            if VERBOSE:
+                log(f"📥 Batch {connection_batch} - Connection {connection_id} received response: {message_time}ms")
             
             # HOLD CONNECTION OPEN PHASE - keep alive until the batch duration is up
-            print(f"[⏱️] Batch {connection_batch} - Connection {connection_id} waiting for batch to complete...")
+            if VERBOSE:
+                log(f"⏱️ Batch {connection_batch} - Connection {connection_id} waiting for batch to complete...")
             
             check_interval = 1.0  # 1 second between checks
             
             # Keep connection open and test it periodically until end_event is set
+            keepalive_count = 0
             while not end_event.is_set():
                 # Send a keepalive message while we wait
                 keepalive_start = time.time()
@@ -123,7 +162,10 @@ async def test_connection(i, url, connection_batch, end_event):
                 echo_response = await asyncio.wait_for(websocket.recv(), timeout=2.0)
                 response_time = round((time.time() - keepalive_start) * 1000, 2)  # in ms
                 response_times.append(response_time)
-                print(f"[🔄] Batch {connection_batch} - Connection {connection_id} still active: {response_time}ms")
+                keepalive_count += 1
+                
+                if VERBOSE:
+                    log(f"🔄 Batch {connection_batch} - Connection {connection_id} still active: {response_time}ms")
                 
                 # Wait for either the end event or check interval
                 try:
@@ -132,7 +174,8 @@ async def test_connection(i, url, connection_batch, end_event):
                     # This is expected if the check_interval elapses before the event is set
                     pass
             
-            print(f"[✓] Batch {connection_batch} - Connection {connection_id} completed batch test")
+            if VERBOSE:
+                log(f"✓ Batch {connection_batch} - Connection {connection_id} completed batch test")
             
             return {
                 "id": connection_id,
@@ -144,11 +187,12 @@ async def test_connection(i, url, connection_batch, end_event):
                 "avg_response": sum(response_times) / len(response_times) if response_times else 0,
                 "min_response": min(response_times) if response_times else 0,
                 "max_response": max(response_times) if response_times else 0,
-                "error": None
+                "error": None,
+                "keepalive_count": keepalive_count
             }
             
     except asyncio.TimeoutError:
-        print(f"[❌] Batch {connection_batch} - Connection {connection_id} TIMED OUT waiting for response")
+        log(f"❌ Batch {connection_batch} - Connection {connection_id} TIMED OUT waiting for response")
         return {
             "id": connection_id,
             "batch": connection_batch,
@@ -157,7 +201,7 @@ async def test_connection(i, url, connection_batch, end_event):
             "error": "Timeout waiting for response"
         }
     except Exception as e:
-        print(f"[❌] Batch {connection_batch} - Connection {connection_id} FAILED: {str(e)}")
+        log(f"❌ Batch {connection_batch} - Connection {connection_id} FAILED: {str(e)}")
         return {
             "id": connection_id,
             "batch": connection_batch,
@@ -168,10 +212,10 @@ async def test_connection(i, url, connection_batch, end_event):
 
 async def run_batch_test(num_connections, batch_number, websocket_url, connection_delay, batch_duration):
     """Run a batch of simultaneous connections for the specified batch duration"""
-    print(f"\n[🔄] Starting batch {batch_number} with {num_connections} simultaneous connections")
-    print(f"[⏱️] Batch will run for {batch_duration} seconds once all connections are established")
+    log(f"\n🔄 Starting batch {batch_number} with {num_connections} simultaneous connections")
+    log(f"⏱️ Batch will run for {batch_duration} seconds once all connections are established")
     if connection_delay > 0:
-        print(f"[⏱️] Using {connection_delay}s delay between starting individual connections")
+        log(f"⏱️ Using {connection_delay}s delay between starting individual connections")
     print_network_stats()
     
     start_time = time.time()
@@ -184,15 +228,24 @@ async def run_batch_test(num_connections, batch_number, websocket_url, connectio
     for i in range(num_connections):
         task = asyncio.create_task(test_connection(i, websocket_url, batch_number, end_event))
         tasks.append(task)
+        if not VERBOSE:
+            show_progress_bar(i+1, num_connections, prefix=f"Creating connections:", suffix="complete")
         if connection_delay > 0 and i < num_connections - 1:
             await asyncio.sleep(connection_delay)
     
+    # No need for explicit newline - show_progress_bar adds it when done
+    
     # Wait for all connections to be established and then hold for batch duration
-    print(f"\n[⏱️] All {num_connections} connections started, holding batch for {batch_duration} seconds...")
-    await asyncio.sleep(batch_duration)
+    log(f"⏱️ All {num_connections} connections started, holding batch for {batch_duration} seconds...")
+    
+    # Show countdown timer
+    for remaining in range(batch_duration, 0, -1):
+        update_progress(f"⏱️ Batch {batch_number}: Holding connections open - {remaining}s remaining...")
+        await asyncio.sleep(1)
+    update_progress(f"⏱️ Batch {batch_number}: Holding connections complete!", final=True)
     
     # Signal all connections to end
-    print(f"\n[⏱️] Batch {batch_number} duration complete, closing all connections...")
+    log(f"⏱️ Batch {batch_number} duration complete, closing all connections...")
     end_event.set()
     
     # Wait for all tasks to complete
@@ -215,18 +268,18 @@ async def run_batch_test(num_connections, batch_number, websocket_url, connectio
     batch_duration = round(time.time() - start_time, 2)
     
     # Print batch summary
-    print(f"\n[📊] BATCH {batch_number} RESULTS:")
-    print(f"Connections: {num_connections}")
-    print(f"Successful: {len(successful)} ({len(successful)/num_connections*100:.1f}%)")
-    print(f"Failed: {len(failed)} ({len(failed)/num_connections*100:.1f}%)")
-    print(f"Response times: Avg: {avg_response:.2f}ms | Min: {min_response:.2f}ms | Max: {max_response:.2f}ms")
-    print(f"Batch duration: {batch_duration}s")
+    log(f"📊 BATCH {batch_number} RESULTS:")
+    log(f"Connections: {num_connections}")
+    log(f"Successful: {len(successful)} ({len(successful)/num_connections*100:.1f}%)")
+    log(f"Failed: {len(failed)} ({len(failed)/num_connections*100:.1f}%)")
+    log(f"Response times: Avg: {avg_response:.2f}ms | Min: {min_response:.2f}ms | Max: {max_response:.2f}ms")
+    log(f"Batch duration: {batch_duration}s")
     print_network_stats()
     
     if failed:
-        print("\nFailed connections in this batch:")
+        log("\nFailed connections in this batch:")
         for result in failed:
-            print(f"  Connection {result['id']}: {result['error']}")
+            log(f"  Connection {result['id']}: {result['error']}")
     
     return {
         "batch": batch_number,
@@ -257,8 +310,13 @@ async def main():
     parser.add_argument('--duration', type=int, default=config['test']['batch_duration'], help=f'How long to keep the entire batch open in seconds (default: {config["test"]["batch_duration"]})')
     parser.add_argument('--delay', type=float, default=config['test']['connection_delay'], help=f'Delay in seconds between starting individual connections (default: {config["test"]["connection_delay"]})')
     parser.add_argument('--cumulative', action='store_true', default=config['test']['cumulative_mode'], help=f'Cumulative mode: keep previous connections open when adding new ones')
+    parser.add_argument('--verbose', action='store_true', default=config['test'].get('verbose_mode', False), help='Show detailed connection logs')
     
     args = parser.parse_args()
+    
+    # Set verbosity level
+    global VERBOSE
+    VERBOSE = args.verbose
     
     # Configure WebSocket URL and parameters
     websocket_url = get_websocket_url(args.host, args.port, args.protocol, args.path)
@@ -270,30 +328,33 @@ async def main():
     cumulative_mode = args.cumulative
     
     # Print test header
-    print("="*80)
-    print("PROGRESSIVE WEBSOCKET CONNECTION STRESS TEST")
-    print("="*80)
-    print(f"Target: {websocket_url}")
-    print(f"Starting with {start_connections} connection(s), incrementing by {connection_increment}, up to {max_connections} max")
-    print(f"Each batch will run for {batch_duration} seconds total")
+    log("="*80)
+    log("PROGRESSIVE WEBSOCKET CONNECTION STRESS TEST")
+    log("="*80)
+    log(f"Target: {websocket_url}")
+    log(f"Starting with {start_connections} connection(s), incrementing by {connection_increment}, up to {max_connections} max")
+    log(f"Each batch will run for {batch_duration} seconds total")
     if cumulative_mode:
-        print(f"CUMULATIVE MODE: Keeping existing connections open when adding new connections")
+        log(f"CUMULATIVE MODE: Keeping existing connections open when adding new connections")
     if args.delay > 0:
-        print(f"Using {args.delay}s delay between starting individual connections within each batch")
+        log(f"Using {args.delay}s delay between starting individual connections within each batch")
+    if VERBOSE:
+        log("VERBOSE MODE: Showing detailed connection logs")
     
-    # Print system information
-    system_info = get_system_info()
-    print("\nSYSTEM INFORMATION:")
-    for key, value in system_info.items():
-        if key != "network_interfaces":
-            print(f"  {key}: {value}")
+    # Print system information if enabled
+    if config.get('display', {}).get('show_system_info', True):
+        system_info = get_system_info()
+        log("\nSYSTEM INFORMATION:")
+        for key, value in system_info.items():
+            if key != "network_interfaces":
+                log(f"  {key}: {value}")
+        
+        log("\nNetwork Interfaces:")
+        for interface in system_info.get("network_interfaces", []):
+            log(f"  {interface['interface']}: {interface['ip']} ({interface['netmask']})")
     
-    print("\nNetwork Interfaces:")
-    for interface in system_info.get("network_interfaces", []):
-        print(f"  {interface['interface']}: {interface['ip']} ({interface['netmask']})")
-    
-    print("\nRunning test batches...")
-    print("="*80)
+    log("\nRunning test batches...")
+    log("="*80)
     
     overall_start_time = time.time()
     batch_results = []
@@ -317,6 +378,11 @@ async def main():
             num_new_connections = start_connections if batch_number == 1 else connection_increment
             total_connections += num_new_connections
             
+            # Print batch start message BEFORE creating connections
+            log(f"🔄 Starting batch {batch_number} with {num_new_connections} new connections (total now: {total_connections})")
+            log(f"⏱️ Batch will run for {batch_duration} seconds")
+            print_network_stats()
+            
             # Create end event for this batch
             end_event = asyncio.Event()
             all_end_events.append(end_event)
@@ -332,15 +398,27 @@ async def main():
                 if args.delay > 0 and i < num_new_connections - 1:
                     await asyncio.sleep(args.delay)
             
-            print(f"\n[🔄] Starting batch {batch_number} with {num_new_connections} new connections (total now: {total_connections})")
-            print(f"[⏱️] Batch will run for {batch_duration} seconds")
-            print_network_stats()
+            # Add a small delay to ensure connection messages are complete before starting progress bar
+            await asyncio.sleep(0.5)
             
-            # Wait for batch duration to test these new connections
-            await asyncio.sleep(batch_duration)
+            # Wait for batch duration to test these new connections - show countdown
+            for remaining in range(batch_duration, 0, -1):
+                percentage = (batch_duration - remaining) / batch_duration
+                # Clear line completely before drawing progress bar
+                print("\r" + " " * 100, end="\r")
+                show_progress_bar(batch_duration - remaining, batch_duration, 
+                                  prefix=f"Batch {batch_number}: Testing {num_new_connections} connections", 
+                                  suffix=f"{remaining}s left")
+                await asyncio.sleep(1)
+            
+            # Ensure progress bar is properly finalized
+            if batch_duration > 0:
+                show_progress_bar(batch_duration, batch_duration, 
+                                 prefix=f"Batch {batch_number}: Testing {num_new_connections} connections", 
+                                 suffix="complete")
             
             # Signal the connections in this batch to end
-            print(f"\n[⏱️] Batch {batch_number} duration complete, closing this batch's connections...")
+            log(f"⏱️ Batch {batch_number} duration complete, closing this batch's connections...")
             end_event.set()
             
             # Gather results for just this batch's new connections
@@ -353,20 +431,20 @@ async def main():
             success_rate = len(successful)/num_new_connections*100 if num_new_connections > 0 else 0
             
             # Print batch summary for the new connections
-            print(f"\n[📊] BATCH {batch_number} NEW CONNECTIONS RESULTS:")
-            print(f"New Connections: {num_new_connections}")
-            print(f"Total Active Connections: {total_connections}")
-            print(f"Successful: {len(successful)} ({success_rate:.1f}%)")
-            print(f"Failed: {len(failed)} ({len(failed)/num_new_connections*100 if num_new_connections > 0 else 0:.1f}%)")
+            log(f"📊 BATCH {batch_number} NEW CONNECTIONS RESULTS:")
+            log(f"New Connections: {num_new_connections}")
+            log(f"Total Active Connections: {total_connections}")
+            log(f"Successful: {len(successful)} ({success_rate:.1f}%)")
+            log(f"Failed: {len(failed)} ({len(failed)/num_new_connections*100 if num_new_connections > 0 else 0:.1f}%)")
             print_network_stats()
             
             if failed:
-                print("\nFailed connections in this batch:")
+                log("\nFailed connections in this batch:")
                 for result in failed:
                     if isinstance(result, dict):
-                        print(f"  Connection {result.get('id', 'unknown')}: {result.get('error', 'Unknown error')}")
+                        log(f"  Connection {result.get('id', 'unknown')}: {result.get('error', 'Unknown error')}")
                     else:
-                        print(f"  Connection error: {str(result)}")
+                        log(f"  Connection error: {str(result)}")
             
             batch_result = {
                 "batch": batch_number,
@@ -384,10 +462,10 @@ async def main():
                 last_stable_batch = batch_result
             elif last_stable_batch is not None:
                 # If we've had a stable batch before and this one failed, stop the test
-                print(f"\n[⚠️] ERROR THRESHOLD REACHED - STOPPING TEST")
-                print(f"     Batch {batch_number} with {num_new_connections} new connections (total: {total_connections}) shows degraded performance.")
-                print(f"     Last stable batch was {last_stable_batch['batch']} with total {last_stable_batch['total_connections']} connections.")
-                print(f"     Success rate for new connections dropped to {success_rate:.1f}% (below {stability_threshold}% threshold)")
+                log(f"\n⚠️ ERROR THRESHOLD REACHED - STOPPING TEST")
+                log(f"     Batch {batch_number} with {num_new_connections} new connections (total: {total_connections}) shows degraded performance.")
+                log(f"     Last stable batch was {last_stable_batch['batch']} with total {last_stable_batch['total_connections']} connections.")
+                log(f"     Success rate for new connections dropped to {success_rate:.1f}% (below {stability_threshold}% threshold)")
                 break
             
             # Move to next batch
@@ -403,10 +481,10 @@ async def main():
                 last_stable_batch = batch_result
             elif last_stable_batch is not None:
                 # If we've had a stable batch before and this one failed, stop the test
-                print(f"\n[⚠️] ERROR THRESHOLD REACHED - STOPPING TEST")
-                print(f"     Batch {batch_number} with {current_connections} connections shows degraded performance.")
-                print(f"     Last stable batch was {last_stable_batch['batch']} with {last_stable_batch['connections']} connections.")
-                print(f"     Success rate dropped to {batch_result['success_rate']:.1f}% (below {stability_threshold}% threshold)")
+                log(f"\n⚠️ ERROR THRESHOLD REACHED - STOPPING TEST")
+                log(f"     Batch {batch_number} with {current_connections} connections shows degraded performance.")
+                log(f"     Last stable batch was {last_stable_batch['batch']} with {last_stable_batch['connections']} connections.")
+                log(f"     Success rate dropped to {batch_result['success_rate']:.1f}% (below {stability_threshold}% threshold)")
                 break
             
             # Move to next batch
@@ -418,7 +496,7 @@ async def main():
     
     # Cleanup for cumulative mode - close all connections
     if cumulative_mode and all_end_events:
-        print(f"\n[⏱️] Test complete, closing all {total_connections} connections...")
+        log(f"\n⏱️ Test complete, closing all {total_connections} connections...")
         # Signal all connections to end
         for event in all_end_events:
             event.set()
@@ -430,34 +508,34 @@ async def main():
     # Print final summary
     overall_duration = round(time.time() - overall_start_time, 2)
     
-    print("\n" + "="*80)
-    print("FINAL TEST RESULTS")
-    print("="*80)
-    print(f"Target: {args.protocol}://{args.host}:{args.port}{args.path}")
-    print(f"Test duration: {overall_duration} seconds")
-    print(f"Batches completed: {len(batch_results)}")
+    log("\n" + "="*80)
+    log("FINAL TEST RESULTS")
+    log("="*80)
+    log(f"Target: {args.protocol}://{args.host}:{args.port}{args.path}")
+    log(f"Test duration: {overall_duration} seconds")
+    log(f"Batches completed: {len(batch_results)}")
     
     # Create a summary table - different for cumulative mode
-    print("\nConnection Stability Summary:")
-    print("-" * 100)
+    log("\nConnection Stability Summary:")
+    log("-" * 100)
     
     if cumulative_mode:
-        print(f"{'Batch #':<8} {'New Conns':<10} {'Total Conns':<12} {'Success Rate':<15} {'Status':<8}")
-        print("-" * 100)
+        log(f"{'Batch #':<8} {'New Conns':<10} {'Total Conns':<12} {'Success Rate':<15} {'Status':<8}")
+        log("-" * 100)
         
         for result in batch_results:
             success_rate = result.get('success_rate', 0)
-            print(f"{result['batch']:<8} {result['new_connections']:<10} {result['total_connections']:<12} " + 
+            log(f"{result['batch']:<8} {result['new_connections']:<10} {result['total_connections']:<12} " + 
                   f"{success_rate:.1f}%{' ✓' if success_rate >= stability_threshold else ' ✗':<5}")
     else:
-        print(f"{'Batch #':<8} {'Connections':<12} {'Success Rate':<15} {'Avg Response':<12} {'Min/Max (ms)':<15} {'Duration':<10}")
-        print("-" * 100)
+        log(f"{'Batch #':<8} {'Connections':<12} {'Success Rate':<15} {'Avg Response':<12} {'Min/Max (ms)':<15} {'Duration':<10}")
+        log("-" * 100)
         
         for result in batch_results:
-            print(f"{result['batch']:<8} {result['connections']:<12} {result['success_rate']:.1f}%{' ✓' if result['success_rate'] >= stability_threshold else ' ✗':<5} " + 
+            log(f"{result['batch']:<8} {result['connections']:<12} {result['success_rate']:.1f}%{' ✓' if result['success_rate'] >= stability_threshold else ' ✗':<5} " + 
                   f"{result.get('avg_response', 0):.2f}ms{'':<6} {result.get('min_response', 0):.2f}/{result.get('max_response', 0):.2f}{'':<3} {result.get('duration', 0)}s")
     
-    print("-" * 100)
+    log("-" * 100)
     
     # Attempt to determine connection limit - different analysis for cumulative mode
     if cumulative_mode:
@@ -469,26 +547,26 @@ async def main():
                 max_stable = max(stable_batches, key=lambda x: x['total_connections'])
                 min_unstable = min(unstable_batches, key=lambda x: x['total_connections'])
                 
-                print(f"\nConnection Stability Analysis (Cumulative Mode):")
-                print(f"✅ Maximum STABLE total connections: {max_stable['total_connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
-                print(f"❌ Minimum UNSTABLE total connections: {min_unstable['total_connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
+                log(f"\nConnection Stability Analysis (Cumulative Mode):")
+                log(f"✅ Maximum STABLE total connections: {max_stable['total_connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
+                log(f"❌ Minimum UNSTABLE total connections: {min_unstable['total_connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
                 
                 if min_unstable['total_connections'] - max_stable['total_connections'] <= connection_increment:
-                    print(f"\n🎯 The system appears to handle around {max_stable['total_connections']} cumulative WebSocket connections.")
-                    print(f"   When adding more to reach {min_unstable['total_connections']} connections, new connections began to fail.")
+                    log(f"\n🎯 The system appears to handle around {max_stable['total_connections']} cumulative WebSocket connections.")
+                    log(f"   When adding more to reach {min_unstable['total_connections']} connections, new connections began to fail.")
                 else:
-                    print(f"\n🎯 The system's connection handling threshold is between {max_stable['total_connections']} and {min_unstable['total_connections']} total connections.")
-                    print(f"   Consider running a more precise test in this range with smaller increments.")
+                    log(f"\n🎯 The system's connection handling threshold is between {max_stable['total_connections']} and {min_unstable['total_connections']} total connections.")
+                    log(f"   Consider running a more precise test in this range with smaller increments.")
             else:
-                print(f"\n❌ All tests showed connection instability. The system may have issues even with {batch_results[0]['total_connections']} connections.")
+                log(f"\n❌ All tests showed connection instability. The system may have issues even with {batch_results[0]['total_connections']} connections.")
         else:
             if batch_results:
                 max_tested = max(batch_results, key=lambda x: x['total_connections'])
-                print(f"\n✅ All connection batches were STABLE up to {max_tested['total_connections']} total connections.")
-                print(f"   The system can handle at least {max_tested['total_connections']} simultaneous WebSocket connections.")
-                print(f"   Consider running a test with more connections to find the limit.")
+                log(f"\n✅ All connection batches were STABLE up to {max_tested['total_connections']} total connections.")
+                log(f"   The system can handle at least {max_tested['total_connections']} simultaneous WebSocket connections.")
+                log(f"   Consider running a test with more connections to find the limit.")
             else:
-                print("\nNo test results available.")
+                log("\nNo test results available.")
     else:
         # Original non-cumulative analysis
         stable_connections = [r for r in batch_results if r['success_rate'] >= stability_threshold]
@@ -499,50 +577,50 @@ async def main():
                 max_stable = max(stable_connections, key=lambda x: x['connections'])
                 min_unstable = min(unstable_connections, key=lambda x: x['connections'])
                 
-                print(f"\nConnection Stability Analysis:")
-                print(f"✅ Maximum STABLE connections: {max_stable['connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
-                print(f"❌ Minimum UNSTABLE connections: {min_unstable['connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
+                log(f"\nConnection Stability Analysis:")
+                log(f"✅ Maximum STABLE connections: {max_stable['connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
+                log(f"❌ Minimum UNSTABLE connections: {min_unstable['connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
                 
                 if min_unstable['connections'] - max_stable['connections'] <= connection_increment:
-                    print(f"\n🎯 Your connection appears to handle around {max_stable['connections']} simultaneous WebSocket connections.")
-                    print(f"   When increasing to {min_unstable['connections']} connections, stability began to deteriorate.")
+                    log(f"\n🎯 Your connection appears to handle around {max_stable['connections']} simultaneous WebSocket connections.")
+                    log(f"   When increasing to {min_unstable['connections']} connections, stability began to deteriorate.")
                 else:
-                    print(f"\n🎯 Your connection stability threshold is between {max_stable['connections']} and {min_unstable['connections']} simultaneous connections.")
-                    print(f"   Consider running a more precise test in this range with smaller increments.")
+                    log(f"\n🎯 Your connection stability threshold is between {max_stable['connections']} and {min_unstable['connections']} simultaneous connections.")
+                    log(f"   Consider running a more precise test in this range with smaller increments.")
             else:
-                print(f"\n❌ All tests showed connection instability. Your connection may not support even {start_connections} simultaneous WebSocket connections.")
+                log(f"\n❌ All tests showed connection instability. Your connection may not support even {start_connections} simultaneous WebSocket connections.")
         else:
             if batch_results:
                 max_tested = max(batch_results, key=lambda x: x['connections'])
-                print(f"\n✅ All tests were STABLE up to {max_tested['connections']} simultaneous connections.")
-                print(f"   Your connection can handle at least {max_tested['connections']} simultaneous WebSocket connections.")
-                print(f"   Consider running a test with more connections to find your limit.")
+                log(f"\n✅ All tests were STABLE up to {max_tested['connections']} simultaneous connections.")
+                log(f"   Your connection can handle at least {max_tested['connections']} simultaneous WebSocket connections.")
+                log(f"   Consider running a test with more connections to find your limit.")
             else:
-                print("\nNo test results available.")
+                log("\nNo test results available.")
     
-    print("\nPossible factors affecting connection stability:")
-    print("- Internet service provider bandwidth and quality")
-    print("- Router/modem capabilities and configuration")
-    print("- Network congestion or throttling")
-    print("- Server capacity and responsiveness")
-    print("- Operating system network stack limitations")
+    log("\nPossible factors affecting connection stability:")
+    log("- Internet service provider bandwidth and quality")
+    log("- Router/modem capabilities and configuration")
+    log("- Network congestion or throttling")
+    log("- Server capacity and responsiveness")
+    log("- Operating system network stack limitations")
     
-    print("="*80)
+    log("="*80)
 
 if __name__ == "__main__":
     # Check for dependencies
     try:
         import psutil
     except ImportError:
-        print("The 'psutil' module is required. Installing...")
+        log("The 'psutil' module is required. Installing...")
         try:
             import subprocess
             subprocess.check_call(["pip", "install", "psutil"])
             import psutil
-            print("Successfully installed psutil.")
+            log("Successfully installed psutil.")
         except Exception as e:
-            print(f"Error installing psutil: {e}")
-            print("Please install it manually with: pip install psutil")
+            log(f"Error installing psutil: {e}")
+            log("Please install it manually with: pip install psutil")
             exit(1)
     
     asyncio.run(main())
