@@ -2,8 +2,8 @@
 
 # Server connection settings
 server:
-  host: "195.201.125.5"
-  port: 7070
+  host: "example.com"
+  port: 8080
   protocol: "ws"  # ws or wss
   path: "/"
 
