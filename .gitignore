@@ -24,4 +24,7 @@ build/
 
 # OS specific files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Local configuration
+config.yaml 
