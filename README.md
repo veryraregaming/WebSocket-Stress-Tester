@@ -16,8 +16,8 @@ A progressive WebSocket connection stress testing tool that measures how many si
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/websocket-stress-tester
-cd websocket-stress-tester
+git clone https://github.com/veryraregaming/WebSocket-Stress-Tester
+cd WebSocket-Stress-Tester
 
 # Install dependencies
 pip install -r requirements.txt
@@ -46,6 +46,27 @@ test:
 ```
 
 Edit this file to change default settings or use command-line arguments to override them.
+
+## Test Server
+
+For local testing, a simple WebSocket echo server script is included:
+
+```bash
+# On Linux/Mac:
+chmod +x server.sh
+./server.sh
+
+# This will:
+# 1. Create a Python virtual environment
+# 2. Install required dependencies
+# 3. Start a WebSocket echo server on port 7070
+```
+
+Once the server is running, you can test against it with:
+
+```bash
+python main.py --host localhost --port 7070
+```
 
 ## Usage
 
