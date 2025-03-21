@@ -11,6 +11,7 @@ A progressive WebSocket connection stress testing tool that measures how many si
 - 📈 Measures response times for all connections
 - 🖥️ Provides system information for troubleshooting
 - ⚙️ YAML configuration for easy customization
+- 🔋 Supports cumulative mode to test new connections under existing load
 
 ## Installation
 
@@ -43,6 +44,7 @@ test:
   batch_duration: 5  # seconds
   connection_delay: 0  # seconds
   stability_threshold: 90.0  # percentage
+  cumulative_mode: false  # whether to keep previous connections open
 ```
 
 Edit this file to change default settings or use command-line arguments to override them.
@@ -85,7 +87,23 @@ python main.py --duration 10
 
 # Add delay between opening connections (seconds)
 python main.py --delay 0.1
+
+# Run in cumulative mode (keeps previous connections open)
+python main.py --cumulative
 ```
+
+## Test Modes
+
+### Standard Mode (Default)
+In standard mode, the tool opens a batch of connections, tests them for the specified duration, then closes them all before starting a new batch with more connections.
+
+### Cumulative Mode
+In cumulative mode (activated with `--cumulative`), previous connections remain open when adding new ones. This tests how systems behave when:
+1. They are already handling an existing connection load
+2. New connections are attempted
+3. Only the most recent batch is measured for success/failure rates
+
+This helps identify scenarios where existing connections work fine, but new connections begin to fail under load.
 
 ## Command Line Options
 
@@ -100,6 +118,7 @@ python main.py --delay 0.1
 | `--increment` | How many connections to add in each batch |
 | `--duration` | How long to keep the entire batch open in seconds |
 | `--delay` | Delay in seconds between starting individual connections |
+| `--cumulative` | Enable cumulative mode to keep previous connections open |
 
 ## Output
 

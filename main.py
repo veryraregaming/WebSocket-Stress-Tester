@@ -13,8 +13,8 @@ import yaml
 # Default configuration (fallback if config.yaml not found)
 DEFAULT_CONFIG = {
     "server": {
-        "host": "example.com",
-        "port": 8080,
+        "host": "195.201.125.5",
+        "port": 7070,
         "protocol": "ws",
         "path": "/"
     },
@@ -24,7 +24,8 @@ DEFAULT_CONFIG = {
         "increment": 1,
         "batch_duration": 5,
         "connection_delay": 0,
-        "stability_threshold": 90.0
+        "stability_threshold": 90.0,
+        "cumulative_mode": False  # Whether to keep previous connections active when adding new ones
     }
 }
 
@@ -255,6 +256,7 @@ async def main():
     parser.add_argument('--increment', type=int, default=config['test']['increment'], help=f'How many connections to add in each batch (default: {config["test"]["increment"]})')
     parser.add_argument('--duration', type=int, default=config['test']['batch_duration'], help=f'How long to keep the entire batch open in seconds (default: {config["test"]["batch_duration"]})')
     parser.add_argument('--delay', type=float, default=config['test']['connection_delay'], help=f'Delay in seconds between starting individual connections (default: {config["test"]["connection_delay"]})')
+    parser.add_argument('--cumulative', action='store_true', default=config['test']['cumulative_mode'], help=f'Cumulative mode: keep previous connections open when adding new ones')
     
     args = parser.parse_args()
     
@@ -265,6 +267,7 @@ async def main():
     connection_increment = args.increment
     batch_duration = args.duration
     stability_threshold = config['test']['stability_threshold']
+    cumulative_mode = args.cumulative
     
     # Print test header
     print("="*80)
@@ -273,6 +276,8 @@ async def main():
     print(f"Target: {websocket_url}")
     print(f"Starting with {start_connections} connection(s), incrementing by {connection_increment}, up to {max_connections} max")
     print(f"Each batch will run for {batch_duration} seconds total")
+    if cumulative_mode:
+        print(f"CUMULATIVE MODE: Keeping existing connections open when adding new connections")
     if args.delay > 0:
         print(f"Using {args.delay}s delay between starting individual connections within each batch")
     
@@ -293,34 +298,130 @@ async def main():
     overall_start_time = time.time()
     batch_results = []
     
+    # For cumulative mode - track all active tasks and end events
+    all_active_tasks = []
+    all_end_events = []
+    
     # Run progressive tests
     batch_number = 1
     current_connections = start_connections
+    total_connections = 0
     
     # Keep track of the last batch with a high success rate
     last_stable_batch = None
     
     while current_connections <= max_connections:
-        batch_result = await run_batch_test(current_connections, batch_number, websocket_url, args.delay, batch_duration)
-        batch_results.append(batch_result)
-        
-        # Check if this batch is considered stable
-        if batch_result["success_rate"] >= stability_threshold:
-            last_stable_batch = batch_result
-        elif last_stable_batch is not None:
-            # If we've had a stable batch before and this one failed, stop the test
-            print(f"\n[⚠️] ERROR THRESHOLD REACHED - STOPPING TEST")
-            print(f"     Batch {batch_number} with {current_connections} connections shows degraded performance.")
-            print(f"     Last stable batch was {last_stable_batch['batch']} with {last_stable_batch['connections']} connections.")
-            print(f"     Success rate dropped to {batch_result['success_rate']:.1f}% (below {stability_threshold}% threshold)")
-            break
-        
-        # Move to next batch
-        batch_number += 1
-        current_connections += connection_increment
+        if cumulative_mode:
+            # In cumulative mode, we only create new connections equal to the increment
+            # (or the start number for the first batch)
+            num_new_connections = start_connections if batch_number == 1 else connection_increment
+            total_connections += num_new_connections
+            
+            # Create end event for this batch
+            end_event = asyncio.Event()
+            all_end_events.append(end_event)
+            
+            # Create tasks for the new connections
+            tasks = []
+            for i in range(num_new_connections):
+                # Use total_connections for global connection counting
+                global_conn_id = total_connections - num_new_connections + i
+                task = asyncio.create_task(test_connection(global_conn_id, websocket_url, batch_number, end_event))
+                tasks.append(task)
+                all_active_tasks.append(task)
+                if args.delay > 0 and i < num_new_connections - 1:
+                    await asyncio.sleep(args.delay)
+            
+            print(f"\n[🔄] Starting batch {batch_number} with {num_new_connections} new connections (total now: {total_connections})")
+            print(f"[⏱️] Batch will run for {batch_duration} seconds")
+            print_network_stats()
+            
+            # Wait for batch duration to test these new connections
+            await asyncio.sleep(batch_duration)
+            
+            # Gather results for just this batch's new connections
+            batch_results_only = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results for the new connections in this batch
+            successful = [r for r in batch_results_only if isinstance(r, dict) and r.get("success", False)]
+            failed = [r for r in batch_results_only if isinstance(r, dict) and not r.get("success", False)]
+            
+            success_rate = len(successful)/num_new_connections*100 if num_new_connections > 0 else 0
+            
+            # Print batch summary for the new connections
+            print(f"\n[📊] BATCH {batch_number} NEW CONNECTIONS RESULTS:")
+            print(f"New Connections: {num_new_connections}")
+            print(f"Total Active Connections: {total_connections}")
+            print(f"Successful: {len(successful)} ({success_rate:.1f}%)")
+            print(f"Failed: {len(failed)} ({len(failed)/num_new_connections*100 if num_new_connections > 0 else 0:.1f}%)")
+            print_network_stats()
+            
+            if failed:
+                print("\nFailed connections in this batch:")
+                for result in failed:
+                    if isinstance(result, dict):
+                        print(f"  Connection {result.get('id', 'unknown')}: {result.get('error', 'Unknown error')}")
+                    else:
+                        print(f"  Connection error: {str(result)}")
+            
+            batch_result = {
+                "batch": batch_number,
+                "new_connections": num_new_connections,
+                "total_connections": total_connections,
+                "successful": len(successful),
+                "failed": len(failed),
+                "success_rate": success_rate
+            }
+            
+            batch_results.append(batch_result)
+            
+            # Check if this batch is considered stable
+            if success_rate >= stability_threshold:
+                last_stable_batch = batch_result
+            elif last_stable_batch is not None:
+                # If we've had a stable batch before and this one failed, stop the test
+                print(f"\n[⚠️] ERROR THRESHOLD REACHED - STOPPING TEST")
+                print(f"     Batch {batch_number} with {num_new_connections} new connections (total: {total_connections}) shows degraded performance.")
+                print(f"     Last stable batch was {last_stable_batch['batch']} with total {last_stable_batch['total_connections']} connections.")
+                print(f"     Success rate for new connections dropped to {success_rate:.1f}% (below {stability_threshold}% threshold)")
+                break
+            
+            # Move to next batch
+            batch_number += 1
+            current_connections += connection_increment
+        else:
+            # Original non-cumulative mode
+            batch_result = await run_batch_test(current_connections, batch_number, websocket_url, args.delay, batch_duration)
+            batch_results.append(batch_result)
+            
+            # Check if this batch is considered stable
+            if batch_result["success_rate"] >= stability_threshold:
+                last_stable_batch = batch_result
+            elif last_stable_batch is not None:
+                # If we've had a stable batch before and this one failed, stop the test
+                print(f"\n[⚠️] ERROR THRESHOLD REACHED - STOPPING TEST")
+                print(f"     Batch {batch_number} with {current_connections} connections shows degraded performance.")
+                print(f"     Last stable batch was {last_stable_batch['batch']} with {last_stable_batch['connections']} connections.")
+                print(f"     Success rate dropped to {batch_result['success_rate']:.1f}% (below {stability_threshold}% threshold)")
+                break
+            
+            # Move to next batch
+            batch_number += 1
+            current_connections += connection_increment
         
         # Short pause between batches
         await asyncio.sleep(1)
+    
+    # Cleanup for cumulative mode - close all connections
+    if cumulative_mode and all_end_events:
+        print(f"\n[⏱️] Test complete, closing all {total_connections} connections...")
+        # Signal all connections to end
+        for event in all_end_events:
+            event.set()
+        
+        # Wait for all tasks to complete
+        if all_active_tasks:
+            await asyncio.gather(*all_active_tasks, return_exceptions=True)
     
     # Print final summary
     overall_duration = round(time.time() - overall_start_time, 2)
@@ -332,46 +433,88 @@ async def main():
     print(f"Test duration: {overall_duration} seconds")
     print(f"Batches completed: {len(batch_results)}")
     
-    # Create a summary table
+    # Create a summary table - different for cumulative mode
     print("\nConnection Stability Summary:")
-    print("-" * 90)
-    print(f"{'Batch #':<8} {'Connections':<12} {'Success Rate':<15} {'Avg Response':<12} {'Min/Max (ms)':<15} {'Duration':<10}")
-    print("-" * 90)
+    print("-" * 100)
     
-    for result in batch_results:
-        print(f"{result['batch']:<8} {result['connections']:<12} {result['success_rate']:.1f}%{' ✓' if result['success_rate'] >= stability_threshold else ' ✗':<5} {result['avg_response']:.2f}ms{'':<6} {result['min_response']:.2f}/{result['max_response']:.2f}{'':<3} {result['duration']}s")
-    
-    print("-" * 90)
-    
-    # Attempt to determine connection limit
-    stable_connections = [r for r in batch_results if r['success_rate'] >= stability_threshold]
-    unstable_connections = [r for r in batch_results if r['success_rate'] < stability_threshold]
-    
-    if unstable_connections:
-        if stable_connections:
-            max_stable = max(stable_connections, key=lambda x: x['connections'])
-            min_unstable = min(unstable_connections, key=lambda x: x['connections'])
-            
-            print(f"\nConnection Stability Analysis:")
-            print(f"✅ Maximum STABLE connections: {max_stable['connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
-            print(f"❌ Minimum UNSTABLE connections: {min_unstable['connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
-            
-            if min_unstable['connections'] - max_stable['connections'] <= connection_increment:
-                print(f"\n🎯 Your connection appears to handle around {max_stable['connections']} simultaneous WebSocket connections.")
-                print(f"   When increasing to {min_unstable['connections']} connections, stability began to deteriorate.")
-            else:
-                print(f"\n🎯 Your connection stability threshold is between {max_stable['connections']} and {min_unstable['connections']} simultaneous connections.")
-                print(f"   Consider running a more precise test in this range with smaller increments.")
-        else:
-            print(f"\n❌ All tests showed connection instability. Your connection may not support even {start_connections} simultaneous WebSocket connections.")
+    if cumulative_mode:
+        print(f"{'Batch #':<8} {'New Conns':<10} {'Total Conns':<12} {'Success Rate':<15} {'Status':<8}")
+        print("-" * 100)
+        
+        for result in batch_results:
+            success_rate = result.get('success_rate', 0)
+            print(f"{result['batch']:<8} {result['new_connections']:<10} {result['total_connections']:<12} " + 
+                  f"{success_rate:.1f}%{' ✓' if success_rate >= stability_threshold else ' ✗':<5}")
     else:
-        if batch_results:
-            max_tested = max(batch_results, key=lambda x: x['connections'])
-            print(f"\n✅ All tests were STABLE up to {max_tested['connections']} simultaneous connections.")
-            print(f"   Your connection can handle at least {max_tested['connections']} simultaneous WebSocket connections.")
-            print(f"   Consider running a test with more connections to find your limit.")
+        print(f"{'Batch #':<8} {'Connections':<12} {'Success Rate':<15} {'Avg Response':<12} {'Min/Max (ms)':<15} {'Duration':<10}")
+        print("-" * 100)
+        
+        for result in batch_results:
+            print(f"{result['batch']:<8} {result['connections']:<12} {result['success_rate']:.1f}%{' ✓' if result['success_rate'] >= stability_threshold else ' ✗':<5} " + 
+                  f"{result.get('avg_response', 0):.2f}ms{'':<6} {result.get('min_response', 0):.2f}/{result.get('max_response', 0):.2f}{'':<3} {result.get('duration', 0)}s")
+    
+    print("-" * 100)
+    
+    # Attempt to determine connection limit - different analysis for cumulative mode
+    if cumulative_mode:
+        stable_batches = [r for r in batch_results if r['success_rate'] >= stability_threshold]
+        unstable_batches = [r for r in batch_results if r['success_rate'] < stability_threshold]
+        
+        if unstable_batches:
+            if stable_batches:
+                max_stable = max(stable_batches, key=lambda x: x['total_connections'])
+                min_unstable = min(unstable_batches, key=lambda x: x['total_connections'])
+                
+                print(f"\nConnection Stability Analysis (Cumulative Mode):")
+                print(f"✅ Maximum STABLE total connections: {max_stable['total_connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
+                print(f"❌ Minimum UNSTABLE total connections: {min_unstable['total_connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
+                
+                if min_unstable['total_connections'] - max_stable['total_connections'] <= connection_increment:
+                    print(f"\n🎯 The system appears to handle around {max_stable['total_connections']} cumulative WebSocket connections.")
+                    print(f"   When adding more to reach {min_unstable['total_connections']} connections, new connections began to fail.")
+                else:
+                    print(f"\n🎯 The system's connection handling threshold is between {max_stable['total_connections']} and {min_unstable['total_connections']} total connections.")
+                    print(f"   Consider running a more precise test in this range with smaller increments.")
+            else:
+                print(f"\n❌ All tests showed connection instability. The system may have issues even with {batch_results[0]['total_connections']} connections.")
         else:
-            print("\nNo test results available.")
+            if batch_results:
+                max_tested = max(batch_results, key=lambda x: x['total_connections'])
+                print(f"\n✅ All connection batches were STABLE up to {max_tested['total_connections']} total connections.")
+                print(f"   The system can handle at least {max_tested['total_connections']} simultaneous WebSocket connections.")
+                print(f"   Consider running a test with more connections to find the limit.")
+            else:
+                print("\nNo test results available.")
+    else:
+        # Original non-cumulative analysis
+        stable_connections = [r for r in batch_results if r['success_rate'] >= stability_threshold]
+        unstable_connections = [r for r in batch_results if r['success_rate'] < stability_threshold]
+        
+        if unstable_connections:
+            if stable_connections:
+                max_stable = max(stable_connections, key=lambda x: x['connections'])
+                min_unstable = min(unstable_connections, key=lambda x: x['connections'])
+                
+                print(f"\nConnection Stability Analysis:")
+                print(f"✅ Maximum STABLE connections: {max_stable['connections']} (Batch {max_stable['batch']}, {max_stable['success_rate']:.1f}% success)")
+                print(f"❌ Minimum UNSTABLE connections: {min_unstable['connections']} (Batch {min_unstable['batch']}, {min_unstable['success_rate']:.1f}% success)")
+                
+                if min_unstable['connections'] - max_stable['connections'] <= connection_increment:
+                    print(f"\n🎯 Your connection appears to handle around {max_stable['connections']} simultaneous WebSocket connections.")
+                    print(f"   When increasing to {min_unstable['connections']} connections, stability began to deteriorate.")
+                else:
+                    print(f"\n🎯 Your connection stability threshold is between {max_stable['connections']} and {min_unstable['connections']} simultaneous connections.")
+                    print(f"   Consider running a more precise test in this range with smaller increments.")
+            else:
+                print(f"\n❌ All tests showed connection instability. Your connection may not support even {start_connections} simultaneous WebSocket connections.")
+        else:
+            if batch_results:
+                max_tested = max(batch_results, key=lambda x: x['connections'])
+                print(f"\n✅ All tests were STABLE up to {max_tested['connections']} simultaneous connections.")
+                print(f"   Your connection can handle at least {max_tested['connections']} simultaneous WebSocket connections.")
+                print(f"   Consider running a test with more connections to find your limit.")
+            else:
+                print("\nNo test results available.")
     
     print("\nPossible factors affecting connection stability:")
     print("- Internet service provider bandwidth and quality")
