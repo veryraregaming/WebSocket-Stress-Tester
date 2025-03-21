@@ -1,0 +1,17 @@
+# WebSocket Stress Tester Configuration
+
+# Server connection settings
+server:
+  host: "example.com"
+  port: 8080
+  protocol: "ws"  # ws or wss
+  path: "/"
+
+# Connection test settings
+test:
+  start_connections: 1
+  max_connections: 10
+  increment: 1
+  batch_duration: 5  # seconds - how long to hold the entire batch open
+  connection_delay: 0  # seconds delay between starting individual connections
+  stability_threshold: 90.0  # percentage success rate considered stable 
