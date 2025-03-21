@@ -15,4 +15,10 @@ test:
   batch_duration: 10     # Hold connections open longer to observe behavior
   connection_delay: 0.2  # Small delay between opening connections
   stability_threshold: 90.0  # percentage success rate considered stable
-  cumulative_mode: true  # Keep existing connections open when adding new ones 
+  cumulative_mode: true  # Keep existing connections open when adding new ones
+  verbose_mode: false    # Whether to show detailed connection logs
+
+# Display settings
+display:
+  show_network_stats: false  # Whether to show network stats after each batch
+  show_system_info: false    # Whether to show system info at startup 
