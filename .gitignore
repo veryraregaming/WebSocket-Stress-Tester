@@ -1,32 +1,24 @@
-# Virtual Environment
-venv/
-env/
-ENV/
-.env/
-.venv/
-
-# Python cache files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-.pytest_cache/
 
 # Distribution / packaging
 dist/
 build/
 *.egg-info/
 
+# Virtual environments
+venv/
+env/
+ENV/
+
 # IDE files
 .idea/
 .vscode/
-*.swp
-*.swo
 
-# OS specific files
-.DS_Store
-Thumbs.db
+# Logs
+*.log
 
-# Local configuration
-config.yaml 
-config.yaml
-config.yaml
+# Local configuration - commented out for first commit
+# config.yaml

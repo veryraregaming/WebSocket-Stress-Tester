@@ -1,53 +1,73 @@
 # WebSocket Stress Tester
 
-A progressive WebSocket connection stress testing tool that measures how many simultaneous WebSocket connections your client or server can handle.
+A tool for testing WebSocket server performance and connection limits by progressively increasing the number of simultaneous connections.
 
 ## Features
 
-- 🔄 Tests increasing numbers of simultaneous WebSocket connections
-- ⏱️ Holds batches of connections open for a configurable duration
-- 📊 Reports detailed connection statistics and performance metrics
-- 🚦 Automatically detects stability thresholds
-- 📈 Measures response times for all connections
-- 🖥️ Provides system information for troubleshooting
-- ⚙️ YAML configuration for easy customization
-- 🔋 Supports cumulative mode to test new connections under existing load
+- Test WebSocket server capacity with multiple simultaneous connections
+- Gradually increase connections to find stability thresholds
+- Cumulative testing mode to keep existing connections open while adding new ones
+- Detailed statistics on connection success rates and response times
+- Configurable connection parameters through YAML file or command line arguments
 
 ## Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/veryraregaming/WebSocket-Stress-Tester
+git clone https://github.com/veryraregaming/WebSocket-Stress-Tester.git
 cd WebSocket-Stress-Tester
 
-# Install dependencies
+# Install requirements
 pip install -r requirements.txt
 ```
 
 ## Configuration
 
-The tool uses a `config.yaml` file for its settings. Example configuration:
+Edit the `config.yaml` file to set your WebSocket server details and testing parameters:
 
 ```yaml
-# Server connection settings
 server:
   host: "example.com"
   port: 8080
   protocol: "ws"  # ws or wss
   path: "/"
-
-# Connection test settings
-test:
-  start_connections: 1
-  max_connections: 10
-  increment: 1
-  batch_duration: 5  # seconds
-  connection_delay: 0  # seconds
-  stability_threshold: 90.0  # percentage
-  cumulative_mode: false  # whether to keep previous connections open
 ```
 
-Edit this file to change default settings or use command-line arguments to override them.
+## Usage
+
+Basic usage with default settings from config.yaml:
+
+```bash
+python main.py
+```
+
+With command line arguments (overrides config file):
+
+```bash
+python main.py --host example.com --port 8080 --start 10 --max 100 --increment 5 --duration 10 --cumulative
+```
+
+### Parameters
+
+- `--host`: WebSocket server hostname
+- `--port`: WebSocket server port
+- `--protocol`: Protocol (ws or wss)
+- `--path`: WebSocket endpoint path
+- `--start`: Starting number of connections
+- `--max`: Maximum number of connections to test
+- `--increment`: How many connections to add in each batch
+- `--duration`: How long to keep the entire batch open in seconds
+- `--delay`: Delay in seconds between starting individual connections
+- `--cumulative`: Keep previous connections open when adding new ones
+
+## Cumulative Mode
+
+In cumulative mode, each batch keeps existing connections open and adds new ones. This helps test how servers handle increasing connection loads over time.
+
+Example command:
+```bash
+python main.py --cumulative --start 20 --increment 10 --max 200
+```
 
 ## Test Server
 
@@ -69,56 +89,6 @@ Once the server is running, you can test against it with:
 ```bash
 python main.py --host localhost --port 7070
 ```
-
-## Usage
-
-```bash
-# Basic usage with settings from config.yaml
-python main.py
-
-# Test against a different WebSocket server
-python main.py --host other-server.com --port 8080
-
-# Increase the maximum number of connections
-python main.py --max 50 --increment 5
-
-# Hold connections open longer (seconds)
-python main.py --duration 10
-
-# Add delay between opening connections (seconds)
-python main.py --delay 0.1
-
-# Run in cumulative mode (keeps previous connections open)
-python main.py --cumulative
-```
-
-## Test Modes
-
-### Standard Mode (Default)
-In standard mode, the tool opens a batch of connections, tests them for the specified duration, then closes them all before starting a new batch with more connections.
-
-### Cumulative Mode
-In cumulative mode (activated with `--cumulative`), previous connections remain open when adding new ones. This tests how systems behave when:
-1. They are already handling an existing connection load
-2. New connections are attempted
-3. Only the most recent batch is measured for success/failure rates
-
-This helps identify scenarios where existing connections work fine, but new connections begin to fail under load.
-
-## Command Line Options
-
-| Option | Description |
-|--------|-------------|
-| `--host` | WebSocket server hostname |
-| `--port` | WebSocket server port |
-| `--protocol` | WebSocket protocol (ws or wss) |
-| `--path` | WebSocket endpoint path |
-| `--start` | Starting number of connections |
-| `--max` | Maximum number of connections to test |
-| `--increment` | How many connections to add in each batch |
-| `--duration` | How long to keep the entire batch open in seconds |
-| `--delay` | Delay in seconds between starting individual connections |
-| `--cumulative` | Enable cumulative mode to keep previous connections open |
 
 ## Output
 
