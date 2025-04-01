@@ -1,3 +1,4 @@
+
 # WebSocket Stress Tester
 
 A tool for testing WebSocket server performance and connection limits by progressively increasing the number of simultaneous connections.
@@ -5,10 +6,11 @@ A tool for testing WebSocket server performance and connection limits by progres
 ## Features
 
 - Test WebSocket server capacity with multiple simultaneous connections
-- Gradually increase connections to find stability thresholds
+- Supports both `ws://` and `wss://` protocols
 - Cumulative testing mode to keep existing connections open while adding new ones
 - Detailed statistics on connection success rates and response times
-- Configurable connection parameters through YAML file or command line arguments
+- Configurable connection parameters via YAML or command-line
+- Optional secure echo server with self-signed TLS certificate
 
 ## Installation
 
@@ -20,97 +22,130 @@ cd WebSocket-Stress-Tester
 # Install requirements
 pip install -r requirements.txt
 
-# Create your config file (copy from example)
+# Copy and edit the config file
 cp example_config.yaml config.yaml
-# Edit config.yaml with your server details
 ```
 
 ## Configuration
 
-Copy `example_config.yaml` to `config.yaml` and edit it to set your WebSocket server details and testing parameters:
+Edit `config.yaml` to match your WebSocket server:
 
 ```yaml
 server:
   host: "your-server.com"
   port: 8080
-  protocol: "ws"  # ws or wss
+  protocol: "ws"  # Options: "ws" or "wss"
   path: "/"
 ```
 
+You can override these with CLI flags.
+
 ## Usage
 
-Basic usage with default settings from config.yaml:
+Run with the config file:
 
 ```bash
 python main.py
 ```
 
-With command line arguments (overrides config file):
+Or override with command-line arguments:
 
 ```bash
-python main.py --host example.com --port 8080 --start 10 --max 100 --increment 5 --duration 10 --cumulative
+python main.py --host example.com --port 8080 --protocol wss --start 10 --max 100 --increment 5 --duration 10 --cumulative
 ```
 
-### Parameters
+### Command Line Parameters
 
 - `--host`: WebSocket server hostname
 - `--port`: WebSocket server port
-- `--protocol`: Protocol (ws or wss)
+- `--protocol`: `ws` or `wss`
 - `--path`: WebSocket endpoint path
 - `--start`: Starting number of connections
-- `--max`: Maximum number of connections to test
-- `--increment`: How many connections to add in each batch
-- `--duration`: How long to keep the entire batch open in seconds
-- `--delay`: Delay in seconds between starting individual connections
-- `--cumulative`: Keep previous connections open when adding new ones
+- `--max`: Maximum number of connections
+- `--increment`: How many to add per batch
+- `--duration`: Batch duration in seconds
+- `--delay`: Delay between starting connections (seconds)
+- `--cumulative`: Enable cumulative mode (keep previous connections alive)
+- `--verbose`: Show detailed per-connection logs
 
 ## Cumulative Mode
 
-In cumulative mode, each batch keeps existing connections open and adds new ones. This helps test how servers handle increasing connection loads over time.
+In cumulative mode, each batch keeps existing connections open and adds more, allowing you to observe server performance under increasing load.
 
-Example command:
 ```bash
 python main.py --cumulative --start 20 --increment 10 --max 200
 ```
 
-## Test Server
+## Test Servers
 
-For local testing, a simple WebSocket echo server script is included:
+### 1. Unencrypted Echo Server (`ws://`)
+To run a basic WebSocket echo server on `ws://localhost:7070`:
 
 ```bash
-# On Linux/Mac:
 chmod +x server.sh
 ./server.sh
-
-# This will:
-# 1. Create a Python virtual environment
-# 2. Install required dependencies
-# 3. Start a WebSocket echo server on port 7070
 ```
 
-Once the server is running, you can test against it with:
+This script will:
+- Create a virtual environment
+- Install dependencies
+- Start a plain WebSocket echo server
+
+Test it with:
 
 ```bash
-python main.py --host localhost --port 7070
+python main.py --host localhost --port 7070 --protocol ws
 ```
+
+---
+
+### 2. Secure Echo Server (`wss://`)
+To run a secure WebSocket echo server on `wss://localhost:7070` with self-signed TLS:
+
+```bash
+chmod +x wssserver.sh
+sudo ./wssserver.sh
+```
+
+This script will:
+- Set up a virtual environment
+- Install dependencies
+- Generate a self-signed certificate (cert.pem + key.pem)
+- Start a secure WebSocket server using TLS
+
+Test it with:
+
+```bash
+python main.py --host localhost --port 7070 --protocol wss
+```
+
+📌 _Note: Self-signed certs are fine for local testing, but you'll need valid certs for production use._
+
+---
 
 ## Output
 
-The tool provides detailed output including:
+You'll receive detailed feedback including:
 - Connection success/failure rates
-- Response time statistics (average, min, max)
-- Network usage statistics
-- System information for context
+- Response times (avg, min, max)
+- Network stats (optional)
+- System info (optional)
 - Connection stability analysis
-- Maximum stable connection count
+- Estimated max stable connection count
 
 ## Requirements
 
 - Python 3.7+
-- websockets
-- psutil
-- PyYAML
+- `websockets`
+- `psutil`
+- `PyYAML`
+
+Install everything with:
+
+```bash
+pip install -r requirements.txt
+```
 
 ## License
 
-MIT 
+MIT
