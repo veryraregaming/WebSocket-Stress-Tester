@@ -10,6 +10,7 @@ import os
 import psutil
 import yaml
 import datetime
+import ssl
 
 # Default configuration (fallback if config.yaml not found)
 DEFAULT_CONFIG = {
@@ -26,38 +27,33 @@ DEFAULT_CONFIG = {
         "batch_duration": 5,
         "connection_delay": 0,
         "stability_threshold": 90.0,
-        "cumulative_mode": False,  # Whether to keep previous connections active when adding new ones
-        "verbose_mode": False      # Whether to show detailed connection logs
+        "cumulative_mode": False,
+        "verbose_mode": False
     },
     "display": {
-        "show_network_stats": True,  # Whether to show network stats after each batch
-        "show_system_info": True     # Whether to show system info at startup
+        "show_network_stats": True,
+        "show_system_info": True
     }
 }
 
-# Global verbosity level
 VERBOSE = False
 
-# Helper function to print with timestamp
 def log(message, level="INFO", end="\n"):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", end=end)
 
-# Helper function for progress updates (overwrites the same line)
 def update_progress(message, final=False):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\r[{timestamp}] {message}", end="\n" if final else "")
 
-# Helper function to show a progress bar
 def show_progress_bar(current, total, prefix="", suffix="", length=30):
     filled_length = int(length * current // total)
     bar = "█" * filled_length + "░" * (length - filled_length)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\r[{timestamp}] {prefix} |{bar}| {current}/{total} {suffix}", end="")
-    if current == total:  # When progress is complete, add a newline
+    if current == total:
         print()
 
-# Load configuration from YAML
 def load_config():
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.yaml')
     try:
@@ -69,14 +65,12 @@ def load_config():
         log(f"⚠️ Warning: Could not load config.yaml ({str(e)}), using default configuration")
         return DEFAULT_CONFIG
 
-# Global configuration
 CONFIG = load_config()
 
 def get_websocket_url(host, port, protocol, path):
     return f"{protocol}://{host}:{port}{path}"
 
 def get_system_info():
-    """Get basic system information for network troubleshooting context"""
     try:
         system_info = {
             "os": platform.system() + " " + platform.release(),
@@ -86,26 +80,21 @@ def get_system_info():
             "memory_usage": psutil.virtual_memory().percent,
             "network_interfaces": []
         }
-        
-        # Get network interface information
         for interface, addresses in psutil.net_if_addrs().items():
             for address in addresses:
-                if address.family == socket.AF_INET:  # IPv4
+                if address.family == socket.AF_INET:
                     system_info["network_interfaces"].append({
                         "interface": interface,
                         "ip": address.address,
                         "netmask": address.netmask
                     })
-        
         return system_info
     except Exception as e:
         return {"error": f"Could not gather system info: {str(e)}"}
 
 def print_network_stats():
-    """Print current network statistics"""
     if not CONFIG.get('display', {}).get('show_network_stats', True):
         return
-        
     try:
         net_stats = psutil.net_io_counters()
         log(f"Network Stats: Sent: {net_stats.bytes_sent/1024/1024:.2f} MB | Received: {net_stats.bytes_recv/1024/1024:.2f} MB")
@@ -114,69 +103,53 @@ def print_network_stats():
         log("Could not retrieve network statistics")
 
 async def test_connection(i, url, connection_batch, end_event):
-    """Test a single WebSocket connection and keep it open until the end event is set"""
     connection_id = i + 1
     start_time = time.time()
     response_times = []
-    
     try:
-        # CONNECT PHASE
-        async with websockets.connect(url) as websocket:
+        ssl_context = None
+        if url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        async with websockets.connect(url, ssl=ssl_context) as websocket:
             connected_time = time.time()
-            connect_time = round((connected_time - start_time) * 1000, 2)  # in ms
+            connect_time = round((connected_time - start_time) * 1000, 2)
             if VERBOSE:
                 log(f"✅ Batch {connection_batch} - Connection {connection_id} successfully connected ({connect_time}ms)")
             else:
-                update_progress(f"✅ Batch {connection_batch} - Connected {connection_id}/{i+1} connections", 
-                               final=(connection_id == i+1))
-            
-            # INITIAL MESSAGE PHASE
+                update_progress(f"✅ Batch {connection_batch} - Connected {connection_id}/{i+1} connections", final=(connection_id == i+1))
             test_message = f"Test message from connection {connection_id}"
             message_start = time.time()
             await websocket.send(test_message)
             if VERBOSE:
                 log(f"📤 Batch {connection_batch} - Connection {connection_id} sent initial message")
-            
-            # Wait for response with timeout
             response = await asyncio.wait_for(websocket.recv(), timeout=3.0)
-            message_time = round((time.time() - message_start) * 1000, 2)  # in ms
+            message_time = round((time.time() - message_start) * 1000, 2)
             response_times.append(message_time)
             if VERBOSE:
                 log(f"📥 Batch {connection_batch} - Connection {connection_id} received response: {message_time}ms")
-            
-            # HOLD CONNECTION OPEN PHASE - keep alive until the batch duration is up
             if VERBOSE:
                 log(f"⏱️ Batch {connection_batch} - Connection {connection_id} waiting for batch to complete...")
-            
-            check_interval = 1.0  # 1 second between checks
-            
-            # Keep connection open and test it periodically until end_event is set
+            check_interval = 1.0
             keepalive_count = 0
             while not end_event.is_set():
-                # Send a keepalive message while we wait
                 keepalive_start = time.time()
                 keepalive_msg = f"keepalive-{connection_id}"
                 await websocket.send(keepalive_msg)
-                
-                # Wait for echo response
                 echo_response = await asyncio.wait_for(websocket.recv(), timeout=2.0)
-                response_time = round((time.time() - keepalive_start) * 1000, 2)  # in ms
+                response_time = round((time.time() - keepalive_start) * 1000, 2)
                 response_times.append(response_time)
                 keepalive_count += 1
-                
                 if VERBOSE:
                     log(f"🔄 Batch {connection_batch} - Connection {connection_id} still active: {response_time}ms")
-                
-                # Wait for either the end event or check interval
                 try:
                     await asyncio.wait_for(end_event.wait(), timeout=check_interval)
                 except asyncio.TimeoutError:
-                    # This is expected if the check_interval elapses before the event is set
                     pass
-            
             if VERBOSE:
                 log(f"✓ Batch {connection_batch} - Connection {connection_id} completed batch test")
-            
             return {
                 "id": connection_id,
                 "batch": connection_batch,
@@ -190,7 +163,6 @@ async def test_connection(i, url, connection_batch, end_event):
                 "error": None,
                 "keepalive_count": keepalive_count
             }
-            
     except asyncio.TimeoutError:
         log(f"❌ Batch {connection_batch} - Connection {connection_id} TIMED OUT waiting for response")
         return {
